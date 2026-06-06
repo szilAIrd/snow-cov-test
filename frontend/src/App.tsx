@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type KeyboardEvent } from "react";
 import { DayPicker } from "react-day-picker";
 import "react-day-picker/style.css";
 import { AnalysisResponse, CopernicusRunHistoryItem, CopernicusTrace } from "./types";
@@ -16,6 +16,21 @@ interface FscInfo {
   lat_min: number | null;
   lon_max: number | null;
   lat_max: number | null;
+}
+
+interface SearchResult {
+  place_id: number;
+  display_name: string;
+  lat: string;
+  lon: string;
+  type?: string;
+}
+
+interface MapSearchTarget {
+  lat: number;
+  lon: number;
+  label: string;
+  token: number;
 }
 
 const NON_SNOW_LEGEND = [
@@ -59,6 +74,12 @@ export default function App() {
   const [availableDateCache, setAvailableDateCache] = useState<Map<string, Set<string>>>(new Map());
   const [calendarMonth, setCalendarMonth] = useState<Date>(new Date());
   const [loadingDates, setLoadingDates] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchError, setSearchError] = useState<string | null>(null);
+  const [mapSearchTarget, setMapSearchTarget] = useState<MapSearchTarget | null>(null);
 
   // Fetch FSC dataset info on mount; use the real acquisition date if available
   useEffect(() => {
@@ -72,6 +93,72 @@ export default function App() {
       })
       .catch(() => {}); // non-fatal — fall back to yesterday
   }, []);
+
+  // ── Header location search (OpenStreetMap Nominatim) ──────────────────
+  useEffect(() => {
+    const q = searchQuery.trim();
+    if (q.length < 2) {
+      setSearchResults([]);
+      setSearchOpen(false);
+      setSearchLoading(false);
+      setSearchError(null);
+      return;
+    }
+
+    const t = setTimeout(async () => {
+      setSearchLoading(true);
+      setSearchError(null);
+      try {
+        const url =
+          "https://nominatim.openstreetmap.org/search?format=jsonv2&limit=8&q=" +
+          encodeURIComponent(q);
+        const res = await fetch(url, {
+          headers: { "Accept-Language": "en" },
+        });
+        if (!res.ok) {
+          throw new Error(`Search request failed (${res.status})`);
+        }
+        const json = (await res.json()) as SearchResult[];
+        setSearchResults(json);
+        setSearchOpen(true);
+      } catch (err) {
+        setSearchResults([]);
+        setSearchOpen(true);
+        setSearchError(err instanceof Error ? err.message : "Search failed");
+      } finally {
+        setSearchLoading(false);
+      }
+    }, 250);
+
+    return () => clearTimeout(t);
+  }, [searchQuery]);
+
+  const selectSearchResult = (r: SearchResult) => {
+    const lat = Number(r.lat);
+    const lon = Number(r.lon);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+
+    setMapSearchTarget({
+      lat,
+      lon,
+      label: r.display_name,
+      token: Date.now(),
+    });
+    setSearchQuery(r.display_name);
+    setSearchOpen(false);
+  };
+
+  const handleSearchKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      if (searchResults.length > 0) {
+        selectSearchResult(searchResults[0]);
+      }
+    }
+    if (e.key === "Escape") {
+      setSearchOpen(false);
+    }
+  };
 
   // ── Date-availability helpers ───────────────────────────────────────────
   const toIsoDate = (d: Date): string => {
@@ -219,8 +306,47 @@ export default function App() {
   return (
     <div className="app-shell">
       <header className="app-header">
-        <h1>SnowRoute</h1>
-        <span>Mountain Snow Conditions</span>
+        <div className="app-title-wrap">
+          <h1>SnowRoute</h1>
+          <span>Mountain Snow Conditions</span>
+        </div>
+        <div className="header-search">
+          <input
+            type="text"
+            className="header-search-input"
+            placeholder="Search city, mountain, place..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            onFocus={() => {
+              if (searchResults.length > 0 || searchError || searchLoading) {
+                setSearchOpen(true);
+              }
+            }}
+            onBlur={() => window.setTimeout(() => setSearchOpen(false), 120)}
+            onKeyDown={handleSearchKeyDown}
+          />
+          {searchOpen && (
+            <div className="header-search-dropdown">
+              {searchLoading && <div className="search-item search-item-muted">Searching...</div>}
+              {!searchLoading && searchError && (
+                <div className="search-item search-item-muted">{searchError}</div>
+              )}
+              {!searchLoading && !searchError && searchResults.length === 0 && (
+                <div className="search-item search-item-muted">No results</div>
+              )}
+              {!searchLoading && !searchError && searchResults.map((r) => (
+                <button
+                  key={r.place_id}
+                  type="button"
+                  className="search-item"
+                  onClick={() => selectSearchResult(r)}
+                >
+                  {r.display_name}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
       </header>
 
       <div className="app-body">
@@ -381,6 +507,7 @@ export default function App() {
             showSnowLayer={showSnowLayer}
             snowLayerDate={snowLayerDate}
             snowLayerOpacity={snowLayerOpacity}
+            searchTarget={mapSearchTarget}
           />
           {analysis && showSegmentDetail && <SegmentTable segments={analysis.segments} />}
         </div>

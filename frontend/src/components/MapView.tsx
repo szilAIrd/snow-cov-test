@@ -56,6 +56,8 @@ interface Props {
   snowLayerOpacity: number;
   /** Show or hide the OpenStreetMap base layer (default true) */
   showOsmLayer: boolean;
+  /** Optional map target selected from search */
+  searchTarget?: { lat: number; lon: number; label: string; token: number } | null;
 }
 
 export function MapView({
@@ -64,9 +66,12 @@ export function MapView({
   snowLayerDate,
   snowLayerOpacity,
   showOsmLayer,
+  searchTarget,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
+  const searchMarkerRef = useRef<maplibregl.Marker | null>(null);
+  const markerTimeoutRef = useRef<number | null>(null);
   // Keep a ref so the opacity effect never needs to rebuild the source
   const opacityRef = useRef(snowLayerOpacity);
 
@@ -96,10 +101,47 @@ export function MapView({
     mapRef.current.addControl(new maplibregl.NavigationControl(), "top-right");
 
     return () => {
+      if (markerTimeoutRef.current != null) {
+        window.clearTimeout(markerTimeoutRef.current);
+      }
+      searchMarkerRef.current?.remove();
+      searchMarkerRef.current = null;
       mapRef.current?.remove();
       mapRef.current = null;
     };
   }, []);
+
+  // ── Search target recenter + temporary pin ─────────────────────────────
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !searchTarget) return;
+
+    const apply = () => {
+      map.flyTo({
+        center: [searchTarget.lon, searchTarget.lat],
+        zoom: 12,
+        essential: true,
+      });
+
+      if (markerTimeoutRef.current != null) {
+        window.clearTimeout(markerTimeoutRef.current);
+      }
+
+      searchMarkerRef.current?.remove();
+      searchMarkerRef.current = new maplibregl.Marker({ color: "#ef4444" })
+        .setLngLat([searchTarget.lon, searchTarget.lat])
+        .setPopup(new maplibregl.Popup({ offset: 20 }).setText(searchTarget.label))
+        .addTo(map);
+
+      markerTimeoutRef.current = window.setTimeout(() => {
+        searchMarkerRef.current?.remove();
+        searchMarkerRef.current = null;
+      }, 12000);
+    };
+
+    if (map.isStyleLoaded()) apply();
+    else map.once("load", apply);
+  }, [searchTarget]);
 
   // ── OSM base-map visibility toggle ─────────────────────────────────────
   useEffect(() => {
