@@ -1,0 +1,390 @@
+import { useEffect, useState } from "react";
+import { DayPicker } from "react-day-picker";
+import "react-day-picker/style.css";
+import { AnalysisResponse, CopernicusRunHistoryItem, CopernicusTrace } from "./types";
+import { MapView, fscToColor } from "./components/MapView";
+import { GPXUpload } from "./components/GPXUpload";
+import { SummaryCard } from "./components/SummaryCard";
+import { SegmentTable } from "./components/SegmentTable";
+import { CopernicusTracePanel } from "./components/CopernicusTracePanel";
+
+interface FscInfo {
+  available: boolean;
+  file_count: number;
+  date: string | null;
+  lon_min: number | null;
+  lat_min: number | null;
+  lon_max: number | null;
+  lat_max: number | null;
+}
+
+const NON_SNOW_LEGEND = [
+  { color: "#22c55e", label: "No snow detected" },
+  { color: "#96A0AA", label: "Cloud / no data" },
+  { color: "#1e40af", label: "Water" },
+];
+
+// Gradient stops for the FSC legend bar (0% → 100%)
+const FSC_STOPS = [0, 25, 50, 75, 100];
+
+// Sentinel stored in availableDateCache for months where the server is in mock
+// mode. Lets us skip re-fetching while still keeping all dates selectable.
+const MOCK_SENTINEL = "__mock__";
+
+/** Returns YYYY-MM-DD for N days ago */
+function daysAgo(n: number): string {
+  const d = new Date();
+  d.setDate(d.getDate() - n);
+  return d.toISOString().split("T")[0];
+}
+
+export default function App() {
+  const [file, setFile] = useState<File | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [analysis, setAnalysis] = useState<AnalysisResponse | null>(null);
+  const [fscInfo, setFscInfo] = useState<FscInfo | null>(null);
+  const [tracePanelOpen, setTracePanelOpen] = useState(true);
+  const [traceHistory, setTraceHistory] = useState<CopernicusRunHistoryItem[]>([]);
+  const [showSegmentDetail, setShowSegmentDetail] = useState(true);
+
+  // Layer visibility state
+  const [showOsmLayer, setShowOsmLayer] = useState(true);
+  const [showSnowLayer, setShowSnowLayer] = useState(true);
+  const [snowLayerDate, setSnowLayerDate] = useState(daysAgo(1));
+  const [snowLayerOpacity, setSnowLayerOpacity] = useState(0.85);
+
+  // Available-dates calendar state
+  const [routeCenter, setRouteCenter] = useState<{ lat: number; lon: number } | null>(null);
+  const [availableDateCache, setAvailableDateCache] = useState<Map<string, Set<string>>>(new Map());
+  const [calendarMonth, setCalendarMonth] = useState<Date>(new Date());
+  const [loadingDates, setLoadingDates] = useState(false);
+
+  // Fetch FSC dataset info on mount; use the real acquisition date if available
+  useEffect(() => {
+    fetch("/api/v1/fsc/info")
+      .then((r) => r.json())
+      .then((info: FscInfo) => {
+        setFscInfo(info);
+        if (info.available && info.date) {
+          setSnowLayerDate(info.date);
+        }
+      })
+      .catch(() => {}); // non-fatal — fall back to yesterday
+  }, []);
+
+  // ── Date-availability helpers ───────────────────────────────────────────
+  const toIsoDate = (d: Date): string => {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    return `${y}-${m}-${day}`;
+  };
+
+  const isDateDisabled = (d: Date): boolean => {
+    if (!routeCenter) return false;
+    const mk = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+    const monthDates = availableDateCache.get(mk);
+    if (!monthDates || monthDates.has(MOCK_SENTINEL)) return false; // not fetched or mock
+    return !monthDates.has(toIsoDate(d));
+  };
+
+  const isDateAvailable = (d: Date): boolean => {
+    const mk = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+    const monthDates = availableDateCache.get(mk);
+    if (!monthDates || monthDates.has(MOCK_SENTINEL)) return false;
+    return monthDates.has(toIsoDate(d));
+  };
+
+  const fetchAvailableDatesForCenter = async (
+    center: { lat: number; lon: number },
+    month: Date
+  ) => {
+    const mk = `${month.getFullYear()}-${String(month.getMonth() + 1).padStart(2, "0")}`;
+    if (availableDateCache.has(mk)) return;
+    setLoadingDates(true);
+    try {
+      const res = await fetch(
+        `/api/v1/fsc/available-dates?lat=${center.lat}&lon=${center.lon}` +
+          `&year=${month.getFullYear()}&month=${month.getMonth() + 1}`
+      );
+      if (res.ok) {
+        const json = (await res.json()) as { dates: string[]; mode?: string };
+        // In mock mode cache a sentinel so we don't re-fetch on every navigation,
+        // but isDateDisabled will still treat the month as "no filter applied".
+        const toCache = json.mode === "mock" ? [MOCK_SENTINEL] : json.dates;
+        setAvailableDateCache((prev) => new Map(prev).set(mk, new Set(toCache)));
+      }
+    } catch {
+      // non-fatal — calendar shows all dates as selectable
+    } finally {
+      setLoadingDates(false);
+    }
+  };
+
+  const handleMonthChange = (month: Date) => {
+    setCalendarMonth(month);
+    if (routeCenter) fetchAvailableDatesForCenter(routeCenter, month);
+  };
+
+  const handleFile = (f: File) => {
+    setFile(f);
+    setError(null);
+    setAnalysis(null);
+  };
+
+  const exportTraceHistory = () => {
+    if (traceHistory.length === 0) return;
+    const payload = {
+      exported_at: new Date().toISOString(),
+      run_count: traceHistory.length,
+      runs: traceHistory,
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], {
+      type: "application/json",
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `copernicus-trace-${new Date().toISOString().replace(/[:.]/g, "-")}.json`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleAnalyse = async () => {
+    if (!file) return;
+    setLoading(true);
+    setError(null);
+
+    try {
+      const form = new FormData();
+      form.append("file", file);
+
+      const res = await fetch("/api/v1/analyse/gpx", {
+        method: "POST",
+        body: form,
+      });
+
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.detail ?? `Server error ${res.status}`);
+      }
+
+      const data: AnalysisResponse = await res.json();
+      setAnalysis(data);
+
+      const trace: CopernicusTrace =
+        data.copernicus_trace ??
+        {
+          mode: "mock",
+          queried_s3_keys: [],
+          used_s3_keys: [],
+          downloaded_s3_keys: [],
+        };
+      setTraceHistory((prev) => [
+        {
+          run_id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          run_at: new Date().toISOString(),
+          source_file: file.name,
+          safety_indicator: data.summary.safety_indicator,
+          trace,
+        },
+        ...prev,
+      ]);
+
+      if (data.segments.length > 0) {
+        const mid = data.segments[Math.floor(data.segments.length / 2)];
+        const center = { lat: mid.lat, lon: mid.lon };
+        setRouteCenter(center);
+        fetchAvailableDatesForCenter(center, calendarMonth);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unknown error");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const currentMonthKey = `${calendarMonth.getFullYear()}-${String(calendarMonth.getMonth() + 1).padStart(2, "0")}`;
+  const currentMonthDates = availableDateCache.get(currentMonthKey);
+  const noDataThisMonth =
+    !!routeCenter &&
+    !loadingDates &&
+    !!currentMonthDates &&
+    !currentMonthDates.has(MOCK_SENTINEL) &&
+    currentMonthDates.size === 0;
+
+  return (
+    <div className="app-shell">
+      <header className="app-header">
+        <h1>SnowRoute</h1>
+        <span>Mountain Snow Conditions</span>
+      </header>
+
+      <div className="app-body">
+        {/* ── Sidebar ─────────────────────────────────────── */}
+        <aside className="sidebar">
+          <GPXUpload onFile={handleFile} loading={loading} />
+
+          {error && <div className="error-box">{error}</div>}
+
+          <button
+            className="btn-analyse"
+            onClick={handleAnalyse}
+            disabled={!file || loading}
+          >
+            {loading ? "Analysing…" : "Analyse Snow Conditions"}
+          </button>
+
+          {analysis && (
+            <button
+              className="btn-secondary"
+              type="button"
+              onClick={() => setShowSegmentDetail((v) => !v)}
+            >
+              {showSegmentDetail ? "Hide Per-segment Detail" : "Show Per-segment Detail"}
+            </button>
+          )}
+
+          <CopernicusTracePanel
+            isOpen={tracePanelOpen}
+            onToggle={() => setTracePanelOpen((v) => !v)}
+            onExport={exportTraceHistory}
+            runs={traceHistory}
+          />
+
+          {analysis && <SummaryCard summary={analysis.summary} />}
+
+          {/* Base map toggle */}
+          <div className="layer-card layer-card--compact">
+            <div className="layer-card-header">
+              <h3>OpenStreetMap</h3>
+              <label className="layer-toggle">
+                <input
+                  type="checkbox"
+                  checked={showOsmLayer}
+                  onChange={(e) => setShowOsmLayer(e.target.checked)}
+                />
+                <span>{showOsmLayer ? "On" : "Off"}</span>
+              </label>
+            </div>
+          </div>
+
+          {/* Snow coverage layer controls */}
+          <div className="layer-card">
+            <div className="layer-card-header">
+              <h3>FSC Snow Cover</h3>
+              {fscInfo?.available && (
+                <span className="real-data-badge">
+                  {fscInfo.file_count} real tile{fscInfo.file_count !== 1 ? "s" : ""}
+                </span>
+              )}
+              <label className="layer-toggle">
+                <input
+                  type="checkbox"
+                  checked={showSnowLayer}
+                  onChange={(e) => setShowSnowLayer(e.target.checked)}
+                />
+                <span>{showSnowLayer ? "On" : "Off"}</span>
+              </label>
+            </div>
+            {showSnowLayer && (
+              <>
+                <div className="layer-row">
+                  <label>
+                    Date{loadingDates && <span className="dates-loading"> · loading…</span>}
+                  </label>
+                  <div className="date-picker-wrap">
+                    <DayPicker
+                      mode="single"
+                      selected={
+                        snowLayerDate
+                          ? new Date(snowLayerDate + "T12:00:00")
+                          : undefined
+                      }
+                      onSelect={(d) => d && setSnowLayerDate(toIsoDate(d))}
+                      month={calendarMonth}
+                      onMonthChange={handleMonthChange}
+                      disabled={[isDateDisabled, { after: new Date() }]}
+                      modifiers={{ available: isDateAvailable }}
+                      modifiersClassNames={{ available: "rdp-day-available" }}
+                    />
+                    {noDataThisMonth && (
+                      <p className="dates-empty">No Copernicus data this month</p>
+                    )}
+                  </div>
+                </div>
+                <div className="layer-row">
+                  <label htmlFor="snow-opacity">
+                    Opacity <strong>{Math.round(snowLayerOpacity * 100)}%</strong>
+                  </label>
+                  <input
+                    id="snow-opacity"
+                    type="range"
+                    min="0.1"
+                    max="1"
+                    step="0.05"
+                    value={snowLayerOpacity}
+                    onChange={(e) => setSnowLayerOpacity(parseFloat(e.target.value))}
+                  />
+                </div>
+                <p className="layer-source">
+                  {fscInfo?.available
+                    ? `Copernicus CLMS · HR-WSI FSCOG · ${fscInfo.date ?? snowLayerDate}`
+                    : "Copernicus CLMS · HR-WSI FSCOG (synthetic model)"}
+                </p>
+              </>
+            )}
+          </div>
+
+          {/* Legend */}
+          <div className="legend">
+            <h3>Map legend</h3>
+
+            {/* FSC gradient scale */}
+            <div className="legend-section-label">Snow cover (FSC %)</div>
+            <div className="fsc-gradient-bar"
+              style={{
+                background: `linear-gradient(to right, ${FSC_STOPS.map(
+                  (v) => fscToColor(v)
+                ).join(", ")})`,
+              }}
+            />
+            <div className="fsc-gradient-labels">
+              <span>0 % (low)</span>
+              <span>100 % (dense)</span>
+            </div>
+            <div className="legend-item fsc-risk-note">
+              <span className="legend-ring" />Steep ≥30° → red border
+            </div>
+
+            {/* Non-snow entries */}
+            <div className="legend-divider" />
+            <div className="legend-items">
+              {NON_SNOW_LEGEND.map(({ color, label }) => (
+                <div className="legend-item" key={label}>
+                  <div className="legend-dot" style={{ background: color }} />
+                  {label}
+                </div>
+              ))}
+            </div>
+          </div>
+        </aside>
+
+        {/* ── Map + table ──────────────────────────────────── */}
+        <div className="map-wrap">
+          <MapView
+            analysis={analysis}
+            showOsmLayer={showOsmLayer}
+            showSnowLayer={showSnowLayer}
+            snowLayerDate={snowLayerDate}
+            snowLayerOpacity={snowLayerOpacity}
+          />
+          {analysis && showSegmentDetail && <SegmentTable segments={analysis.segments} />}
+        </div>
+      </div>
+    </div>
+  );
+}

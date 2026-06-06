@@ -1,0 +1,24 @@
+services:
+  backend:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    environment:
+      - CORS_ORIGINS=http://localhost:5173,http://localhost:80
+      # Set FSC_USE_REAL_DATA=true to query real Copernicus HR-WSI S3 data.
+      # When false (default) the mock elevation-based provider is used.
+      - FSC_USE_REAL_DATA=true
+      - FSC_CACHE_DIR=/app/fsc_cache
+      - FSC_PRODUCT_TYPE=GFSC
+    volumes:
+      - fsc_cache:/app/fsc_cache
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+
+volumes:
+  fsc_cache:
