@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 
 
@@ -15,6 +15,7 @@ class AnalysisOptions(BaseModel):
 class AnalyseRequest(BaseModel):
     route: RouteGeometry
     options: Optional[AnalysisOptions] = None
+    selected_dataset_date: Optional[str] = None
 
 
 class SegmentResult(BaseModel):
@@ -42,7 +43,19 @@ class CopernicusTrace(BaseModel):
     downloaded_s3_keys: List[str]
 
 
+class DatasetDateGroup(BaseModel):
+    date: str
+    products: List[str]
+
+
+class RouteDatasetOptionsResponse(BaseModel):
+    dates: List[DatasetDateGroup]
+    latest_date: Optional[str] = None
+    tiles: List[str]
+
+
 class AnalysisResponse(BaseModel):
     summary: Summary
     segments: List[SegmentResult]
     copernicus_trace: Optional[CopernicusTrace] = None
+    warnings: List[str] = Field(default_factory=list)

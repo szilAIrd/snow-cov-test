@@ -58,6 +58,7 @@ def analyse_route(
     steep_threshold_deg: float = 30.0,
     max_data_age_days: int = 7,
     analysis_date: Optional[date] = None,
+    selected_dataset_date: Optional[date] = None,
 ) -> AnalysisResponse:
     """
     Analyse snow conditions along the supplied list of (lat, lon, elev?) tuples.
@@ -82,7 +83,13 @@ def analyse_route(
 
     try:
         for i, (lat, lon, elev) in enumerate(coords):
-            fsc, acq_date = get_fsc_value(lat, lon, elev, analysis_date)
+            fsc, acq_date = get_fsc_value(
+                lat,
+                lon,
+                elev,
+                analysis_date,
+                selected_dataset_date=selected_dataset_date,
+            )
 
             # Slope: use segment to the next point; fall back to previous
             if i + 1 < len(coords):
@@ -146,8 +153,16 @@ def analyse_route(
         data_age_days={"min": age_min, "max": age_max, "mean": age_mean},
     )
 
+    warnings: List[str] = []
+    if selected_dataset_date is not None and cloud_n > 0:
+        warnings.append(
+            "Selected dataset has missing coverage for part of the route; "
+            "those points were marked as cloud/no-data."
+        )
+
     return AnalysisResponse(
         summary=summary,
         segments=segments,
         copernicus_trace=trace.to_model(),
+        warnings=warnings,
     )

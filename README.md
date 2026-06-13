@@ -79,6 +79,33 @@ Upload a GPX file as multipart form data.
 | `file` | File | — | `.gpx` file |
 | `steep_threshold_deg` | float | 30 | Slope threshold for high-risk classification |
 | `max_data_age_days` | int | 7 | Discard FSC observations older than this |
+| `selected_dataset_date` | string (YYYY-MM-DD) | latest available route date | Force analysis to use only this acquisition date |
+
+### `POST /api/v1/datasets/gpx`
+
+Upload a GPX file as multipart form data and get route-intersecting Copernicus Sentinel dataset options grouped by date.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `file` | File | — | `.gpx` file |
+| `lookback_days` | int | 30 | How many days back to search in Copernicus S3 |
+
+Response format:
+
+```json
+{
+  "latest_date": "2026-04-02",
+  "tiles": ["32TLR", "32TMR"],
+  "dates": [
+    {
+      "date": "2026-04-02",
+      "products": [
+        "GFSC/32TLR/2026/04/02/CLMS_WSI_FSC_020m_T32TLR_20260402T102841_S2A_V200/...tif"
+      ]
+    }
+  ]
+}
+```
 
 ### `POST /api/v1/analyse`
 

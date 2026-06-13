@@ -42,6 +42,7 @@ def get_fsc_value(
     lon: float,
     elevation_m: Optional[float],
     analysis_date: date,
+    selected_dataset_date: Optional[date] = None,
 ) -> Tuple[int, date]:
     """
     Return (fsc_value, acquisition_date) for a single route point.
@@ -58,6 +59,7 @@ def get_fsc_value(
             analysis_date.isoformat(),
             _PROD_TYPE,
             _S3_MAX_AGE,
+            exact_date_iso=selected_dataset_date.isoformat() if selected_dataset_date else None,
         )
         if result is None:
             log.warning(

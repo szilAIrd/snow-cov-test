@@ -1,7 +1,12 @@
 import { useEffect, useState, type KeyboardEvent } from "react";
 import { DayPicker } from "react-day-picker";
 import "react-day-picker/style.css";
-import { AnalysisResponse, CopernicusRunHistoryItem, CopernicusTrace } from "./types";
+import {
+  AnalysisResponse,
+  CopernicusRunHistoryItem,
+  CopernicusTrace,
+  RouteDatasetOptionsResponse,
+} from "./types";
 import { MapView, fscToColor } from "./components/MapView";
 import { GPXUpload } from "./components/GPXUpload";
 import { SummaryCard } from "./components/SummaryCard";
@@ -62,6 +67,11 @@ export default function App() {
   const [tracePanelOpen, setTracePanelOpen] = useState(true);
   const [traceHistory, setTraceHistory] = useState<CopernicusRunHistoryItem[]>([]);
   const [showSegmentDetail, setShowSegmentDetail] = useState(true);
+  const [datasetOptions, setDatasetOptions] = useState<RouteDatasetOptionsResponse | null>(null);
+  const [selectedDatasetDate, setSelectedDatasetDate] = useState<string | null>(null);
+  const [expandedDatasetDates, setExpandedDatasetDates] = useState<string[]>([]);
+  const [loadingDatasetOptions, setLoadingDatasetOptions] = useState(false);
+  const [analysisWarnings, setAnalysisWarnings] = useState<string[]>([]);
 
   // Layer visibility state
   const [showOsmLayer, setShowOsmLayer] = useState(true);
@@ -214,10 +224,50 @@ export default function App() {
     if (routeCenter) fetchAvailableDatesForCenter(routeCenter, month);
   };
 
+  const toggleDatasetDateExpanded = (d: string) => {
+    setExpandedDatasetDates((prev) =>
+      prev.includes(d) ? prev.filter((v) => v !== d) : [...prev, d]
+    );
+  };
+
+  const fetchRouteDatasetOptions = async (nextFile: File) => {
+    setLoadingDatasetOptions(true);
+    setDatasetOptions(null);
+    setSelectedDatasetDate(null);
+    setExpandedDatasetDates([]);
+    setAnalysisWarnings([]);
+
+    try {
+      const form = new FormData();
+      form.append("file", nextFile);
+
+      const res = await fetch("/api/v1/datasets/gpx", {
+        method: "POST",
+        body: form,
+      });
+
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.detail ?? `Server error ${res.status}`);
+      }
+
+      const options = (await res.json()) as RouteDatasetOptionsResponse;
+      setDatasetOptions(options);
+      if (options.latest_date) {
+        setExpandedDatasetDates([options.latest_date]);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not load datasets for this GPX");
+    } finally {
+      setLoadingDatasetOptions(false);
+    }
+  };
+
   const handleFile = (f: File) => {
     setFile(f);
     setError(null);
     setAnalysis(null);
+    fetchRouteDatasetOptions(f);
   };
 
   const exportTraceHistory = () => {
@@ -244,12 +294,18 @@ export default function App() {
     if (!file) return;
     setLoading(true);
     setError(null);
+    setAnalysisWarnings([]);
 
     try {
       const form = new FormData();
       form.append("file", file);
 
-      const res = await fetch("/api/v1/analyse/gpx", {
+      const datasetDateToUse = selectedDatasetDate ?? datasetOptions?.latest_date ?? null;
+      const query = datasetDateToUse
+        ? `?selected_dataset_date=${encodeURIComponent(datasetDateToUse)}`
+        : "";
+
+      const res = await fetch(`/api/v1/analyse/gpx${query}`, {
         method: "POST",
         body: form,
       });
@@ -261,6 +317,7 @@ export default function App() {
 
       const data: AnalysisResponse = await res.json();
       setAnalysis(data);
+        setAnalysisWarnings(data.warnings ?? []);
 
       const trace: CopernicusTrace =
         data.copernicus_trace ??
@@ -354,14 +411,75 @@ export default function App() {
         <aside className="sidebar">
           <GPXUpload onFile={handleFile} loading={loading} />
 
+          {file && (
+            <div className="dataset-picker-card">
+              <div className="dataset-picker-header">
+                <h3>Available Copernicus Datasets</h3>
+                {loadingDatasetOptions && <span className="dataset-picker-loading">Loading...</span>}
+              </div>
+              {datasetOptions?.tiles && datasetOptions.tiles.length > 0 && (
+                <p className="dataset-picker-tiles">Route tiles: {datasetOptions.tiles.join(", ")}</p>
+              )}
+              {!loadingDatasetOptions && datasetOptions && datasetOptions.dates.length === 0 && (
+                <p className="dataset-picker-empty">No intersecting datasets found in the lookback window.</p>
+              )}
+              {!loadingDatasetOptions && datasetOptions && datasetOptions.dates.length > 0 && (
+                <div className="dataset-date-table">
+                  {datasetOptions.dates.map((group) => {
+                    const isExpanded = expandedDatasetDates.includes(group.date);
+                    const isSelected = selectedDatasetDate === group.date;
+                    const isDefaultLatest = !selectedDatasetDate && datasetOptions.latest_date === group.date;
+                    return (
+                      <div
+                        key={group.date}
+                        className={`dataset-date-row${isSelected ? " selected" : ""}${isDefaultLatest ? " default" : ""}`}
+                      >
+                        <button
+                          type="button"
+                          className="dataset-date-main"
+                          onClick={() => setSelectedDatasetDate(group.date)}
+                        >
+                          <span>{group.date}</span>
+                          {isSelected && <span className="dataset-chip">selected</span>}
+                          {isDefaultLatest && <span className="dataset-chip dataset-chip-default">latest default</span>}
+                        </button>
+                        <button
+                          type="button"
+                          className="dataset-expand-btn"
+                          onClick={() => toggleDatasetDateExpanded(group.date)}
+                        >
+                          {isExpanded ? "Hide products" : `Show products (${group.products.length})`}
+                        </button>
+                        {isExpanded && (
+                          <ul className="dataset-product-list">
+                            {group.products.map((productKey) => (
+                              <li key={productKey}>{productKey}</li>
+                            ))}
+                          </ul>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
+
           {error && <div className="error-box">{error}</div>}
+          {analysisWarnings.map((warning) => (
+            <div key={warning} className="warning-box">{warning}</div>
+          ))}
 
           <button
             className="btn-analyse"
             onClick={handleAnalyse}
-            disabled={!file || loading}
+            disabled={!file || loading || loadingDatasetOptions}
           >
-            {loading ? "Analysing…" : "Analyse Snow Conditions"}
+            {loading
+              ? "Analysing…"
+              : loadingDatasetOptions
+                ? "Loading Datasets…"
+                : "Analyse Snow Conditions"}
           </button>
 
           {analysis && (

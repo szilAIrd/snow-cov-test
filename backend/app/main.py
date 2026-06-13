@@ -18,9 +18,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 
 from .analysis import analyse_route
+from . import fsc_s3
 from .fsc_provider import _USE_REAL, _PROD_TYPE, _CACHE_DIR, _S3_MAX_AGE
 from .gpx_parser import parse_gpx
-from .models import AnalyseRequest, AnalysisResponse
+from .models import AnalyseRequest, AnalysisResponse, DatasetDateGroup, RouteDatasetOptionsResponse
 from .tiles import render_fsc_tile
 from .fsc_tiff import coverage_info as _fsc_coverage_info, render_tile_from_cache as _render_real_tile
 
@@ -69,9 +70,21 @@ def analyse_geojson(request: AnalyseRequest):
     opts = request.options
     steep = opts.steep_threshold_deg if opts else 30.0
     max_age = opts.max_data_age_days if opts else 7
+    selected_date_iso = request.selected_dataset_date
+    selected_date = None
+    if selected_date_iso:
+        try:
+            selected_date = date_type.fromisoformat(selected_date_iso)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="selected_dataset_date must be YYYY-MM-DD") from exc
 
     try:
-        return analyse_route(coords, steep_threshold_deg=steep, max_data_age_days=max_age)
+        return analyse_route(
+            coords,
+            steep_threshold_deg=steep,
+            max_data_age_days=max_age,
+            selected_dataset_date=selected_date,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -81,6 +94,7 @@ async def analyse_gpx(
     file: UploadFile = File(..., description="GPX file (tracks, routes, or waypoints)"),
     steep_threshold_deg: float = Query(default=30.0, ge=0, le=90),
     max_data_age_days: int = Query(default=7, ge=1, le=30),
+    selected_dataset_date: Optional[str] = Query(default=None, description="Force analysis to use this dataset date (YYYY-MM-DD)"),
 ):
     """
     Analyse snow conditions along a route from an uploaded GPX file.
@@ -107,14 +121,77 @@ async def analyse_gpx(
             status_code=400, detail="No route points found in GPX file."
         )
 
+    selected_date = None
+    if selected_dataset_date:
+        try:
+            selected_date = date_type.fromisoformat(selected_dataset_date)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="selected_dataset_date must be YYYY-MM-DD") from exc
+
     try:
         return analyse_route(
             coords,
             steep_threshold_deg=steep_threshold_deg,
             max_data_age_days=max_data_age_days,
+            selected_dataset_date=selected_date,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post(
+    "/api/v1/datasets/gpx",
+    response_model=RouteDatasetOptionsResponse,
+    tags=["analysis"],
+)
+async def list_datasets_for_gpx(
+    file: UploadFile = File(..., description="GPX file (tracks, routes, or waypoints)"),
+    lookback_days: int = Query(default=30, ge=1, le=90),
+):
+    """List route-intersecting Copernicus products grouped by acquisition date."""
+    if file.content_type not in (
+        "application/gpx+xml",
+        "application/xml",
+        "text/xml",
+        "application/octet-stream",
+    ) and not (file.filename or "").lower().endswith(".gpx"):
+        raise HTTPException(
+            status_code=415,
+            detail="Expected a GPX file (.gpx).",
+        )
+
+    content = await file.read()
+    try:
+        coords = parse_gpx(content)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if not coords:
+        raise HTTPException(
+            status_code=400, detail="No route points found in GPX file."
+        )
+
+    if not _USE_REAL:
+        return RouteDatasetOptionsResponse(dates=[], latest_date=None, tiles=[])
+
+    route_tiles = sorted({fsc_s3.get_mgrs_tile(lat, lon) for lat, lon, _ in coords})
+    grouped = fsc_s3.list_route_products_grouped_by_date(
+        set(route_tiles),
+        anchor_date_iso=date_type.today().isoformat(),
+        max_age_days=lookback_days,
+        product_type=_PROD_TYPE,
+    )
+
+    date_groups = [
+        DatasetDateGroup(date=d, products=products)
+        for d, products in grouped.items()
+    ]
+    latest_date = date_groups[0].date if date_groups else None
+    return RouteDatasetOptionsResponse(
+        dates=date_groups,
+        latest_date=latest_date,
+        tiles=route_tiles,
+    )
 
 
 # ── FSC tile endpoint (DesignDoc §12.2) ──────────────────────────────────────
@@ -247,8 +324,6 @@ def fsc_available_dates(
     """
     if not _USE_REAL:
         return {"dates": [], "tile": None, "mode": "mock"}
-
-    from . import fsc_s3
 
     tile = fsc_s3.get_mgrs_tile(lat, lon)
     dates = fsc_s3.list_available_dates_for_month(tile, year, month, _PROD_TYPE)

@@ -26,7 +26,7 @@ from contextvars import ContextVar, Token
 from datetime import date, timedelta
 from functools import lru_cache
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Dict, Optional, Tuple
 
 import boto3
 import mgrs as _mgrs_module
@@ -127,6 +127,7 @@ def find_product_key(
     target_date_iso: str,
     product_type: str = "GFSC",
     max_age_days: int = 14,
+    exact_date_iso: Optional[str] = None,
 ) -> Optional[Tuple[str, str]]:
     """Find the S3 key of the on-ground FSC layer nearest to *target_date*.
 
@@ -139,8 +140,13 @@ def find_product_key(
     tile × date do not re-query S3.
     """
     target = date.fromisoformat(target_date_iso)
-    for delta in range(max_age_days + 1):
-        d = target - timedelta(days=delta)
+    if exact_date_iso is not None:
+        dates_to_try = [date.fromisoformat(exact_date_iso)]
+    else:
+        dates_to_try = [target - timedelta(days=delta) for delta in range(max_age_days + 1)]
+
+    for d in dates_to_try:
+        delta = (target - d).days
         prefix = (
             f"{product_type}/{tile}/"
             f"{d.year}/{d.month:02d}/{d.day:02d}/"
@@ -175,6 +181,59 @@ def find_product_key(
         product_type, tile, max_age_days, target_date_iso,
     )
     return None
+
+
+def list_products_for_tile_date(
+    tile: str,
+    day: date,
+    product_type: str = "GFSC",
+) -> list[str]:
+    """Return FSC product keys available for a single tile/date."""
+    prefix = f"{product_type}/{tile}/{day.year}/{day.month:02d}/{day.day:02d}/"
+    try:
+        resp = _client().list_objects_v2(
+            Bucket=_BUCKET,
+            Prefix=prefix,
+            MaxKeys=200,
+        )
+    except Exception as exc:
+        log.error(
+            "S3 listing failed for tile %s on %s: %s",
+            tile,
+            day.isoformat(),
+            exc,
+        )
+        return []
+
+    keys = [obj["Key"] for obj in resp.get("Contents", [])]
+    return sorted(
+        key
+        for key in keys
+        if key.endswith(".tif") and not any(p in key for p in _SKIP_PATTERNS)
+    )
+
+
+def list_route_products_grouped_by_date(
+    tiles: set[str],
+    anchor_date_iso: str,
+    max_age_days: int,
+    product_type: str = "GFSC",
+) -> Dict[str, list[str]]:
+    """Return {YYYY-MM-DD: [full_s3_product_keys...]} merged across route tiles."""
+    grouped: Dict[str, set[str]] = {}
+    anchor = date.fromisoformat(anchor_date_iso)
+    for delta in range(max_age_days + 1):
+        d = anchor - timedelta(days=delta)
+        date_iso = d.isoformat()
+        for tile in tiles:
+            for key in list_products_for_tile_date(tile, d, product_type):
+                grouped.setdefault(date_iso, set()).add(key)
+
+    return {
+        date_iso: sorted(keys)
+        for date_iso, keys in sorted(grouped.items(), reverse=True)
+        if keys
+    }
 
 
 def _pick_fsc_key(keys: list) -> Optional[str]:

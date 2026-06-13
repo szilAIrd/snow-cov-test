@@ -50,4 +50,16 @@ export interface AnalysisResponse {
   summary: Summary;
   segments: SegmentResult[];
   copernicus_trace?: CopernicusTrace;
+  warnings?: string[];
+}
+
+export interface DatasetDateGroup {
+  date: string;
+  products: string[];
+}
+
+export interface RouteDatasetOptionsResponse {
+  dates: DatasetDateGroup[];
+  latest_date: string | null;
+  tiles: string[];
 }
