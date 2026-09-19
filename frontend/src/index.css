@@ -394,10 +394,16 @@ body,
 
 .dataset-picker-loading,
 .dataset-picker-empty,
-.dataset-picker-tiles {
+.dataset-picker-tiles,
+.dataset-picker-help,
+.dataset-picker-selection {
   margin-top: 8px;
   font-size: 0.74rem;
   color: #64748b;
+}
+
+.dataset-picker-selection strong {
+  color: #0f172a;
 }
 
 .dataset-date-table {
