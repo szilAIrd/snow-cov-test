@@ -1,0 +1,9 @@
+{
+  "name": "snowroute",
+  "private": true,
+  "scripts": {
+    "start": "bash ./scripts/start-app.sh",
+    "stop": "docker compose down --remove-orphans",
+    "status": "docker compose ps"
+  }
+}

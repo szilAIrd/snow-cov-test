@@ -1,0 +1,14 @@
+backend/app/__pycache__/__init__.cpython-313.pyc
+backend/app/__pycache__/analysis.cpython-313.pyc
+backend/app/__pycache__/copernicus_trace.cpython-313.pyc
+backend/app/__pycache__/fsc_provider.cpython-313.pyc
+backend/app/__pycache__/fsc_s3.cpython-313.pyc
+backend/app/__pycache__/fsc_tiff.cpython-313.pyc
+backend/app/__pycache__/gpx_parser.cpython-313.pyc
+backend/app/__pycache__/main.cpython-313.pyc
+backend/app/__pycache__/models.cpython-313.pyc
+backend/app/__pycache__/tiles.cpython-313.pyc
+backend/app/__pycache__/main.cpython-313.pyc
+backend/app/__pycache__/__init__.cpython-313.pyc
+backend/app/__pycache__/main.cpython-313.pyc
+backend/app/__pycache__/__init__.cpython-313.pyc

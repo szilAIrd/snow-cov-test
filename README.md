@@ -13,7 +13,25 @@ The FSC provider (`backend/app/fsc_provider.py`) now uses Copernicus HR-WSI data
 
 ---
 
-## Quick start — local development
+## One-click start
+
+For the normal user path, run one of these from the repo root:
+
+```bash
+npm start
+```
+
+Or on macOS, double-click the launcher file:
+
+```text
+Start SnowRoute.command
+```
+
+This starts the full Docker stack, waits for the API health check, and opens the app at http://localhost.
+
+---
+
+## Advanced local development
 
 ### Backend
 
@@ -40,7 +58,7 @@ Vite proxies `/api/*` to `http://localhost:8000`, so no CORS configuration is ne
 
 ---
 
-## Quick start — Docker Compose
+## Docker Compose (manual)
 
 ```bash
 docker compose up --build
