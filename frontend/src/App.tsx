@@ -58,6 +58,10 @@ function daysAgo(n: number): string {
   return d.toISOString().split("T")[0];
 }
 
+function fromIsoDate(isoDate: string): Date {
+  return new Date(`${isoDate}T12:00:00`);
+}
+
 export default function App() {
   const [file, setFile] = useState<File | null>(null);
   const [loading, setLoading] = useState(false);
@@ -178,19 +182,40 @@ export default function App() {
     return `${y}-${m}-${day}`;
   };
 
+  const routeDatasetDates = datasetOptions?.dates.map((group) => group.date) ?? [];
+  const routeDatasetDateSet = new Set(routeDatasetDates);
+  const hasRouteDatasetDates = routeDatasetDateSet.size > 0;
+
+  const setAnalysisDate = (dateIso: string) => {
+    setSelectedDatasetDate(dateIso);
+    setSnowLayerDate(dateIso);
+    setCalendarMonth(fromIsoDate(dateIso));
+    if (routeDatasetDateSet.has(dateIso)) {
+      setExpandedDatasetDates((prev) => (prev.includes(dateIso) ? prev : [dateIso, ...prev]));
+    }
+  };
+
   const isDateDisabled = (d: Date): boolean => {
+    const isoDate = toIsoDate(d);
+    if (hasRouteDatasetDates) {
+      return !routeDatasetDateSet.has(isoDate);
+    }
     if (!routeCenter) return false;
     const mk = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
     const monthDates = availableDateCache.get(mk);
     if (!monthDates || monthDates.has(MOCK_SENTINEL)) return false; // not fetched or mock
-    return !monthDates.has(toIsoDate(d));
+    return !monthDates.has(isoDate);
   };
 
   const isDateAvailable = (d: Date): boolean => {
+    const isoDate = toIsoDate(d);
+    if (hasRouteDatasetDates) {
+      return routeDatasetDateSet.has(isoDate);
+    }
     const mk = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
     const monthDates = availableDateCache.get(mk);
     if (!monthDates || monthDates.has(MOCK_SENTINEL)) return false;
-    return monthDates.has(toIsoDate(d));
+    return monthDates.has(isoDate);
   };
 
   const fetchAvailableDatesForCenter = async (
@@ -255,6 +280,9 @@ export default function App() {
       setDatasetOptions(options);
       if (options.latest_date) {
         setExpandedDatasetDates([options.latest_date]);
+        setSelectedDatasetDate(options.latest_date);
+        setSnowLayerDate(options.latest_date);
+        setCalendarMonth(fromIsoDate(options.latest_date));
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not load datasets for this GPX");
@@ -359,6 +387,7 @@ export default function App() {
     !!currentMonthDates &&
     !currentMonthDates.has(MOCK_SENTINEL) &&
     currentMonthDates.size === 0;
+  const activeAnalysisDate = selectedDatasetDate ?? datasetOptions?.latest_date ?? null;
 
   return (
     <div className="app-shell">
@@ -420,6 +449,19 @@ export default function App() {
               {datasetOptions?.tiles && datasetOptions.tiles.length > 0 && (
                 <p className="dataset-picker-tiles">Route tiles: {datasetOptions.tiles.join(", ")}</p>
               )}
+              {!loadingDatasetOptions && datasetOptions && datasetOptions.dates.length > 0 && (
+                <>
+                  <p className="dataset-picker-help">
+                    Choose a date below or in the calendar. Both stay in sync and the selected date is
+                    used for analysis.
+                  </p>
+                  {activeAnalysisDate && (
+                    <p className="dataset-picker-selection">
+                      Analysis will use <strong>{activeAnalysisDate}</strong>.
+                    </p>
+                  )}
+                </>
+              )}
               {!loadingDatasetOptions && datasetOptions && datasetOptions.dates.length === 0 && (
                 <p className="dataset-picker-empty">No intersecting datasets found in the lookback window.</p>
               )}
@@ -428,20 +470,20 @@ export default function App() {
                   {datasetOptions.dates.map((group) => {
                     const isExpanded = expandedDatasetDates.includes(group.date);
                     const isSelected = selectedDatasetDate === group.date;
-                    const isDefaultLatest = !selectedDatasetDate && datasetOptions.latest_date === group.date;
+                    const isLatest = datasetOptions.latest_date === group.date;
                     return (
                       <div
                         key={group.date}
-                        className={`dataset-date-row${isSelected ? " selected" : ""}${isDefaultLatest ? " default" : ""}`}
+                        className={`dataset-date-row${isSelected ? " selected" : ""}${isLatest ? " default" : ""}`}
                       >
                         <button
                           type="button"
                           className="dataset-date-main"
-                          onClick={() => setSelectedDatasetDate(group.date)}
+                          onClick={() => setAnalysisDate(group.date)}
                         >
                           <span>{group.date}</span>
                           {isSelected && <span className="dataset-chip">selected</span>}
-                          {isDefaultLatest && <span className="dataset-chip dataset-chip-default">latest default</span>}
+                          {isLatest && <span className="dataset-chip dataset-chip-default">latest</span>}
                         </button>
                         <button
                           type="button"
@@ -538,17 +580,25 @@ export default function App() {
               <>
                 <div className="layer-row">
                   <label>
-                    Date{loadingDates && <span className="dates-loading"> · loading…</span>}
+                    Analysis date{loadingDates && <span className="dates-loading"> · loading…</span>}
                   </label>
                   <div className="date-picker-wrap">
                     <DayPicker
                       mode="single"
                       selected={
-                        snowLayerDate
-                          ? new Date(snowLayerDate + "T12:00:00")
+                        (activeAnalysisDate ?? snowLayerDate)
+                          ? fromIsoDate(activeAnalysisDate ?? snowLayerDate)
                           : undefined
                       }
-                      onSelect={(d) => d && setSnowLayerDate(toIsoDate(d))}
+                      onSelect={(d) => {
+                        if (!d) return;
+                        const isoDate = toIsoDate(d);
+                        if (hasRouteDatasetDates) {
+                          setAnalysisDate(isoDate);
+                          return;
+                        }
+                        setSnowLayerDate(isoDate);
+                      }}
                       month={calendarMonth}
                       onMonthChange={handleMonthChange}
                       disabled={[isDateDisabled, { after: new Date() }]}
